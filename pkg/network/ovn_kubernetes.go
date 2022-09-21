@@ -743,6 +743,33 @@ func validateOVNKubernetes(conf *operv1.NetworkSpec) []error {
 	return out
 }
 
+// update MTU
+func IPsecMtuUpdate(NetMTU, MachMTU uint32, next *operv1.NetworkSpec) {
+
+	var MachenMTU uint32
+	var NetworkMTUTo uint32
+	var NetworkMTUFrom uint32
+	const ipsecOverhead = 46
+
+	MachenMTU = uint32(MachMTU)
+	NetworkMTUFrom = uint32(NetMTU)
+	NetworkMTUTo = uint32(NetMTU - ipsecOverhead)
+	next.Migration = &operv1.NetworkMigration{
+		MTU: &operv1.MTUMigration{
+			Network: &operv1.MTUMigrationValues{
+				From: &NetworkMTUFrom,
+				To:   &NetworkMTUTo,
+			},
+			Machine: &operv1.MTUMigrationValues{
+				To: &MachenMTU,
+			},
+		},
+	}
+
+	log.Printf("Migrating MTU to FIT IPsec overhead")
+	log.Printf("New MTU = %v, old MTU = %v ", NetworkMTUTo, NetworkMTUFrom)
+}
+
 func getOVNEncapOverhead(conf *operv1.NetworkSpec) uint32 {
 	const geneveOverhead = 100
 	const ipsecOverhead = 46 // Transport mode, AES-GCM
@@ -875,7 +902,28 @@ func fillOVNKubernetesDefaults(conf, previous *operv1.NetworkSpec, hostMTU int) 
 		var syslogfacility string = "local0"
 		sc.PolicyAuditConfig.SyslogFacility = syslogfacility
 	}
-
+	// Enabling IPsec
+	// check if the NetMtu - MachMTU is >= ipsecOverhead + geneveOverhead
+	// otherwise migrate the cluster NetMTU to Fit the ipsecOverhead
+	if sc.IPsecConfig != nil {
+		if previous != nil && previous.DefaultNetwork.OVNKubernetesConfig != nil &&
+			previous.DefaultNetwork.OVNKubernetesConfig.IPsecConfig == nil {
+				var MachineMTU uint32
+				var NetMTU uint32
+				if hostMTU != 0 {
+					MachineMTU = uint32(hostMTU)
+				} else {
+					var tmp int
+					tmp, _ = GetDefaultMTU()
+					MachineMTU = uint32(tmp)
+				}
+				NetMTU = uint32(*sc.MTU)
+				OverheadRoom := MachineMTU - NetMTU
+				if OverheadRoom < getOVNEncapOverhead(conf) {
+					IPsecMtuUpdate(NetMTU, MachineMTU, conf)
+				}
+			}
+	}
 }
 
 type replicaCountDecoder struct {
